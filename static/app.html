@@ -108,9 +108,15 @@ main{padding:32px;max-width:1400px;margin:0 auto}
 .player-bar{margin-top:12px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .player-info{color:#9ea3ac;font-size:0.9rem;flex:1 1 200px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .player-info strong{color:#fff}
-.player-controls{display:flex;gap:8px;align-items:center;flex-shrink:0}
+.player-controls{display:flex;gap:8px;align-items:center;flex-shrink:0;flex-wrap:wrap}
 .player-select{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:8px 12px;color:#fff;font-size:0.85rem;outline:none;cursor:pointer;font-family:inherit}
 .player-select:hover{border-color:rgba(255,255,255,0.2)}
+.player-btn{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:8px 14px;color:#fff;font-size:0.82rem;font-weight:600;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap}
+.player-btn:hover{background:rgba(255,255,255,0.14);border-color:rgba(255,255,255,0.3)}
+.player-btn.copied{background:rgba(46,204,113,0.25);border-color:#2ecc71;color:#2ecc71}
+.player-btn.vlc{background:rgba(255,136,0,0.15);border-color:rgba(255,136,0,0.4);color:#ff9800}
+.player-btn.vlc:hover{background:rgba(255,136,0,0.28)}
+.link-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px;padding:0 4px}
 .close-btn{position:absolute;top:-16px;right:-16px;width:44px;height:44px;background:#ff3d71;color:#fff;border:none;border-radius:50%;font-size:1.2rem;cursor:pointer;z-index:10;transition:transform 0.2s;font-family:inherit}
 .close-btn:hover{transform:scale(1.1)}
 .resume-toast{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.85);padding:10px 20px;border-radius:20px;font-size:0.85rem;color:#fff;border:1px solid rgba(255,255,255,0.1);pointer-events:none;opacity:0;transition:opacity 0.3s}
@@ -926,6 +932,14 @@ async function openPlayer(sid, slug, se, ep, episodeList, showTitle, posterUrl) 
       }));
     }
 
+    // Map resolution → direct CDN url (for Copy / VLC)
+    const urlByRes = {};
+    for (const s of sources) {
+      urlByRes[s.resolution || 'best'] = s.url || '';
+    }
+    let currentRes = bestRes;
+    let currentDirectUrl = urlByRes[bestRes] || (sources[0] && sources[0].url) || '';
+
     const qualitySelect = el('select', { class: 'player-select', title: 'Quality' });
     for (const s of sources) {
       const opt = el('option', { value: s.resolution || 'best' }, s.resolution || 'best');
@@ -934,6 +948,8 @@ async function openPlayer(sid, slug, se, ep, episodeList, showTitle, posterUrl) 
     }
     qualitySelect.addEventListener('change', (e) => {
       const newRes = e.target.value;
+      currentRes = newRes;
+      currentDirectUrl = urlByRes[newRes] || currentDirectUrl;
       const t = video.currentTime;
       const wasPlaying = !video.paused;
       sourceEl.src = buildProxyUrl(newRes);
@@ -962,6 +978,62 @@ async function openPlayer(sid, slug, se, ep, episodeList, showTitle, posterUrl) 
     subSelect.addEventListener('change', (e) => applySubtitle(parseInt(e.target.value)));
     video.addEventListener('loadedmetadata', () => applySubtitle(initialSubIdx), { once: true });
 
+    // ── Copy Link / Open in VLC ────────────────────────────────────────────
+    function makeCopyBtn(getUrl, label) {
+      const btn = el('button', { class: 'player-btn', type: 'button' }, label || '📋 Copy Link');
+      btn.addEventListener('click', async () => {
+        const url = typeof getUrl === 'function' ? getUrl() : getUrl;
+        if (!url) return;
+        try {
+          await navigator.clipboard.writeText(url);
+        } catch (_) {
+          const ta = document.createElement('textarea');
+          ta.value = url;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        const prev = btn.textContent;
+        btn.textContent = '✓ Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = prev;
+          btn.classList.remove('copied');
+        }, 1800);
+      });
+      return btn;
+    }
+
+    function makeVlcBtn(getUrl) {
+      const btn = el('button', { class: 'player-btn vlc', type: 'button' }, '▶ Open in VLC');
+      btn.addEventListener('click', () => {
+        const url = typeof getUrl === 'function' ? getUrl() : getUrl;
+        if (!url) return;
+        // vlc:// protocol (desktop) — falls back to copying if unsupported
+        const vlcLink = 'vlc://' + url;
+        const a = document.createElement('a');
+        a.href = vlcLink;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // Also copy so user can paste into VLC → Media → Open Network Stream
+        navigator.clipboard.writeText(url).catch(() => {});
+        const prev = btn.textContent;
+        btn.textContent = 'Link copied — paste in VLC';
+        setTimeout(() => { btn.textContent = prev; }, 2500);
+      });
+      return btn;
+    }
+
+    const getDirect = () => currentDirectUrl;
+    const copyBtn = makeCopyBtn(getDirect, '📋 Copy Link');
+    const vlcBtn = makeVlcBtn(getDirect);
+    const copyProxyBtn = makeCopyBtn(() => buildProxyUrl(currentRes), '🔗 Copy Proxy');
+
     container.append(video);
 
     const infoLeft = el('div', { class: 'player-info' },
@@ -972,7 +1044,20 @@ async function openPlayer(sid, slug, se, ep, episodeList, showTitle, posterUrl) 
     );
 
     container.append(el('div', { class: 'player-bar' }, infoLeft,
-      el('div', { class: 'player-controls' }, qualitySelect, captions.length ? subSelect : null)));
+      el('div', { class: 'player-controls' },
+        qualitySelect,
+        captions.length ? subSelect : null,
+        copyBtn,
+        vlcBtn,
+        copyProxyBtn
+      )));
+
+    // Extra row under player for mobile clarity
+    container.append(el('div', { class: 'link-actions' },
+      el('span', { style: 'color:#667;font-size:0.8rem;align-self:center' },
+        'Hosted servers block CDN — use Copy Link / VLC on your device:'
+      )
+    ));
 
     const existing = getHistoryEntry(slug, se, ep);
     if (existing && existing.position > 10) {
@@ -1006,17 +1091,15 @@ async function openPlayer(sid, slug, se, ep, episodeList, showTitle, posterUrl) 
     video.addEventListener('error', () => {
       const code = video.error ? video.error.code : '?';
       const msg = video.error ? (video.error.message || '') : '';
-      buildHeader(`Episode ${ep} — stream failed`);
+      buildHeader(`Episode ${ep} — in-browser stream failed`);
       container.append(el('div', { class: 'access-note', style: 'padding:16px' },
         `Playback error (code ${code}${msg ? ': ' + msg : ''}). ` +
-        'Try another quality, or open the proxy URL directly in a new tab.'));
-      // Offer direct proxy link for debugging
-      const proxyLink = buildProxyUrl(bestRes);
-      container.append(el('a', {
-        href: proxyLink,
-        target: '_blank',
-        style: 'display:inline-block;margin:8px 16px;color:#6cf;font-size:0.85rem',
-      }, 'Open proxy stream URL'));
+        'CDN often blocks hosted servers. Copy the direct link and open in VLC / MX Player on your phone or PC.'));
+      const actions = el('div', { class: 'link-actions', style: 'padding:8px 16px' });
+      actions.append(makeCopyBtn(getDirect, '📋 Copy Direct Link'));
+      actions.append(makeVlcBtn(getDirect));
+      actions.append(makeCopyBtn(() => buildProxyUrl(currentRes), '🔗 Copy Proxy Link'));
+      container.append(actions);
     });
 
     const keyHandler = (e) => {
